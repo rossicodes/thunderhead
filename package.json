@@ -1,0 +1,18 @@
+{
+  "name": "get-data",
+  "version": "1.0.0",
+  "description": "app to fetch data from api and insert into Supabase",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.5.0",
+    "dotenv": "^16.0.3",
+    "node-fetch": "^3.3.0",
+    "pg": "^8.9.0"
+  }
+}
