@@ -2,8 +2,29 @@ import * as dotenv from 'dotenv'
 import fetch from 'node-fetch';
 import { Headers } from 'node-fetch';
 import fs from 'fs'
-import db from './utils/db.js'
+import db from './utils/db.js';
 
+/* THUNDERHEAD DB CONTAINS THE BASIC DATA FROM COMPANIES HOUSE FREE DATA DUMP: https://download.companieshouse.gov.uk/en_output.html 
+THIS APP STARTS AT getAccounts() ln 256. 
+
+FIRST getAccounts() CALLS const item getCompanies() THAT RETURNS AN ARRAY OF COMPANIES DEFINED IN 'QUERY'.
+
+THERE IS NO POINT GETTING COMPANIES THAT DONT HAVE 'FULL' ACCOUNTS SO AT A MINIMUM THE QQERY SHOULD
+INCLUDE 'WHERE accounts_category = FULL.
+
+THEN fetchFilings() IS CALLED. THIS LOOPS THROUGH THE ARRAY OF COMPANIES AND GRABS THE COMPANY NUMBER.
+WITH THAT IT CALLS THE API AND RETURNS THE URL OF THE FILING HISTORY OBJECTS FOR THAT COMPANY.
+
+WE THEN FETCH THE FILING HISTORY OBJECT. THERE ARE LOTS OF ITEMS IN HERE, WE ONLY WANT THE ONES WITH FULL ACCOUNTS.
+THESE HAVE ACCOUNT TYPE OF 'AA' AND DESCRIPTION OF "accounts-with-accounts-type-full".
+
+WE ALSO DO SOME CLEVER STUFF TO AVOID TRIGGERING THE API RATE LIMIT. THE APP WILL WAIT 5 MINS IF IT HITS THE LIMIT.
+
+ONCE WE HAVE THE FILING HISTORY OBJECTS WE LOOP THROUGH THEM AND GRAB THE LINKS TO THE PDF'S. WE ALSO GRAB THE DATE
+
+THE FILING HISTORY OF EACH COMPANY IN THE DB.
+
+*/
 // to run use: node index.js n from the terminal, where n = the batch number (look in the Accounts
 // folder to get the current batch. 
 
@@ -20,218 +41,133 @@ var key = process.env.KEY
 // index of api call
 let index = process.argv[2]
 
-async function getCompanies() {
-  // getCompanies returns an array of active companies with a specific sic code
+async function getCompanies(data) {
 
-  const query = `
-  SELECT *
-  FROM companies
-  WHERE accounts_category = 'FULL'
-  AND status = 'Active'
-  AND (sic_code_1 = '63120 - Web portals' OR sic_code_2 = '63120 - Web portals' OR sic_code_3 = '63120 - Web portals' OR sic_code_4 = '63120 - Web portals')
-  `;
-
-  const dbquery = await db.query(query)
-  const data = await dbquery.rows
-  //console.log(data)
-
-
-  return data;
-
-
-}
-
-
-
-async function getAccounts() {
-  // get an array of actve companies with a specific sic code form CH api
-
-  const items = await getCompanies();
-  console.log("companies: " + JSON.stringify(items))
-
-  //note the company ID / number in the url. This was just a test, 
-  //the production app will need to loop through a list of company id's.
-  //perhaps via a search or data dump.
-
-  // filing history url
-  // var url = 'https://api.companieshouse.gov.uk/company/12763330/filing-history'
-  console.log(`Getting the filing history of ${items.length} companies...`)
-
-  let filings = []
-  let accounts = []
-
-  async function fetchFiling(item) {
-
-    // limit number of calls to 500 every 5 mins
-
-    // loop through the array of objects and grab the filing history of each one.
-
-    let company_number = item.number;
-
-    var url = `https://api.companieshouse.gov.uk/company/${company_number}/filing-history`
-
-    console.log(url)
-
-    let headers = new Headers();
-
-    //headers.append('Content-Type', 'text/xml')
-    headers.append('Accept', 'application/pdf')
-    headers.append('Authorization', 'Basic ' + btoa(key))
-
-    //header object
-    var obj = {
-      method: 'GET',
-      headers: headers
-    }
-    // get company filing history
-
-    try {
-      const response = await fetch(url, obj);
-      const data = await response.json();
-      //console.log(data)
-
-      const xRateLimitRemain = response.headers.get('x-ratelimit-remain')
-      const xRateLimitReset = response.headers.get('x-ratlimit-reset');
-      // console.log("xRateLimitRemain: " + xRateLimitRemain + " " + typeof xRateLimitRemain)
-
-      if (xRateLimitRemain === '10') {
-        console.log('Hit the API rate limit. Waiting 5 mins...');
-        await new Promise(resolve => setTimeout(resolve, 360000));
-        console.log('Resuming...');
-      }
-
-      data.items.forEach(function (i) {
-        // console.log(i)
-        let companyExists = filings.find(obj => obj.number === item.number);
-        if (companyExists) {
-          if (!companyExists.hasOwnProperty("accountsCount") && item.category == 'accounts') {
-            companyExists.accountsCount = 0;
-          }
-          companyExists.accountsCount++;
-          companyExists.accounts["accounts_" + companyExists.accountsCount] = item.accounts;
-        } else {
-
-          let companyWithAccounts = {}
-          companyWithAccounts.number = item.number
-          companyWithAccounts.name = item.name
-          companyWithAccounts.accounts = {}
-          companyWithAccounts.accounts.links = i.links
-          companyWithAccounts.accounts.date = i.date
-          companyWithAccounts.accounts.paper_filed = i.paper_filed
-          companyWithAccounts.accounts.type = i.type
-          companyWithAccounts.accounts.description = i.description
-          companyWithAccounts.accounts.pages = i.pages
-          companyWithAccounts.accounts.barcode = i.barcode
-          companyWithAccounts.accounts.transaction_id = i.transaction_id
-
-          filings.push(companyWithAccounts);
-          console.log(`\x1b[32m Analysing ${JSON.stringify(companyWithAccounts.name)}\x1b[0m`)
-        }
-      })
-    } catch (error) {
-      console.log('Error happened here!')
-      console.error(error)
-    }
-  }
+  let items = data;
 
   for await (var item of items) {
-    // console.log(item)
-    await fetchFiling(item)
 
-  }
+    let account_filing = await fetchFiling(item);
 
-  // loop through each filing history object looking for any with full accounts. 
-
-
-  console.log(`${filings.length} companies have accounts, checking for full accounts...`)
-  console.log(JSON.stringify(filings))
-
-  for await (var item of filings) {
-    // console.log(`item: ` + JSON.stringify(item))
-    //console.log(item)
-    if (item.accounts.description == 'accounts-with-accounts-type-total-exemption-full' || item.accounts.description == 'accounts-with-accounts-type-micro-entity' || item.accounts.description == 'accounts-with-accounts-type-full' || item.accounts.description == 'accounts-with-accounts-type-full-group' || item.accounts.description == 'accounts-with-accounts-type-medium-group' || item.accounts.description == 'accounts-with-accounts-type-interim' || item.accounts.description == 'accounts-with-accounts-type-medium' || item.accounts.description == 'accounts-with-accounts-type-group' || item.accounts.description == 'accounts-with-accounts-type-small' || item.accounts.description == 'accounts-with-accounts-type-small-group') {
-      accounts.push(item)
-      // console.log("added item to accounts: " + JSON.stringify(item))
+    //console.log('account_filing: ' + JSON.stringify(account_filing) + '\n')
+    if (account_filing.filing_history_status === "filing-history-available") {
+      item.account_filing = account_filing;
     }
   }
 
-  //console.log(accounts)
-
-  if (accounts.length === 0) {
-    console.log("None of these companies have full accounts!")
-  }
-
-  console.log(`${accounts.length} companies have filed full accounts, retrieving pdf's...`)
-  //console.log("Accounts array: " + JSON.stringify(accounts))
-
-  for await (var comp of accounts) {
-
-    let headers = new Headers();
-
-    //headers.append('Content-Type', 'text/xml')
-    headers.append('Accept', 'application/pdf')
-    headers.append('Authorization', 'Basic ' + btoa(key))
-
-    //header object
-    var obj = {
-      method: 'GET',
-      headers: headers
-    }
-
-    let metadata = comp.accounts.links.document_metadata
-    //2. fetch the document metadata
-    const meta = await fetch(metadata, obj)
-    const metaResponse = await meta.json()
-    //e.g https://frontend-doc-api.company-information.service.gov.uk/document/-HJYb4FxBNjuvqsQij3mrxsV4IxqjFcrsBtnTMNMBIk
-    //console.log(metaResponse.links.document)
-
-    let document = metaResponse.links.document
-
-    //3. fetch the document 
-    const doc = await fetch(document, obj)
-    //e.g https://document-api.companieshouse.gov.uk/document/-HJYb4FxBNjuvqsQij3mrxsV4IxqjFcrsBtnTMNMBIk/content
-
-    //console.log(`Getting account pdf for ${comp.company_name} from ${doc.url}...`)
-
-    var dir = `./Accounts/Batch_${index}`;
-
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir);
-    }
-
-    const doc_link = `${dir}/${comp.accounts.description.split("-").slice(-2).join("-")}_` + `${comp.name.replace(/\s/g, '_')}.pdf`
-
-    async function insertData(comp) {
-      try {
-        for (const obj of items) {
-          if (obj.number === comp.number) {
-            obj.accounts_link = doc_link;
-
-            const query = `INSERT INTO companies_full (number, name, status, address_1, address_2, town, county, country, postcode, incorporation_date, accounts_due_date, accounts_last_date, accounts_category, sic_code_1, sic_code_2, sic_code_3, sic_code_4, uri, id, flag, accounts, accounts_link) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`;
-            const values = [obj.number, obj.name, obj.status, obj.address_1, obj.address_2, obj.town, obj.county, obj.country, obj.postcode, obj.incorporation_date, obj.accounts_due_date, obj.accounts_last_date, obj.accounts_category, obj.sic_code_1, obj.sic_code_2, obj.sic_code_3, obj.sic_code_4, obj.uri, obj.id, obj.flag, obj.accounts, obj.accounts_link];
-            await db.query(query, values)
-          }
-        }
-      } catch (err) {
-        console.error('Error inserting data: ', err);
-      }
-    }
-
-    insertData(comp)
-
-
-    comp.accounts.links["document_link"] = doc_link
-    //4. download the file by passing in the S3 url to the pdf and the folder you want to download to
-    //no auth header needed in this fetch
-    await downloadFile(doc.url, doc_link)
-    //keys.push(i);
-  }
-  // INSERT these accounts objects into Postgres database...
-
-  // console.log("Accounts array: " + JSON.stringify(accounts))
+  return items
 }
 
+async function getAccounts(company) {
+
+  let item = company;
+  console.log('item: ' + JSON.stringify(item.account_filing.items) + '\n')
+  let count = 0;
+  // loop through each company in items and add the filing history object.
+
+  for await (var filing of item.account_filing.items) {
+
+    // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
+    // AND WE ONLY WANT THE LAST 2 ACCOUNT FILINGS SO WE USE THE account_no VARIABLE 
+    // account_no WILL BE 1 FOR THE FIRST ACCOUNT FILING AND 2 FOR THE SECOND
+
+    if (filing.description === "accounts-with-accounts-type-full" && count < 2) {
+      console.log('count: ' + count)
+      console.log(`Company number: ${item.number} \nCompany name: ${item.name} \n`)
+
+      let headers = new Headers();
+
+      //headers.append('Content-Type', 'text/xml')
+      headers.append('Accept', 'application/pdf')
+      headers.append('Authorization', 'Basic ' + btoa(key))
+
+      //header object
+      var obj = {
+        method: 'GET',
+        headers: headers
+      }
+
+      //2. fetch the document metadata
+
+      try {
+
+        const metadata = await (await fetch(filing.links.document_metadata, obj)).json()
+        let document = metadata.links.document
+
+        // console.log('metadata: ' + JSON.stringify(metadata))
+
+        const doc = await fetch(document, obj)
+
+        // console.log(doc.url)
+
+        var dir = `./Accounts/`;
+        var link = `${item.name.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
+
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir);
+        }
+
+
+
+        const doc_link = `${dir}${link}`
+        await downloadFile(doc.url, doc_link)
+        await insertData(link, item.id, count)
+        count++
+
+      } catch (error) {
+        console.error(error)
+      }
+    }
+  }
+}
+
+async function fetchFiling(item) {
+
+  // limit number of calls to 500 every 5 mins
+
+  // loop through the array of objects and grab the filing history URL.
+
+  let company_number = item.number;
+
+  var url = `https://api.companieshouse.gov.uk/company/${company_number}/filing-history`
+
+  //console.log('FILILING HISTORY URL: ' + url + '\n')
+
+  let headers = new Headers();
+
+  //headers.append('Content-Type', 'text/xml')
+  headers.append('Accept', 'application/pdf')
+  headers.append('Authorization', 'Basic ' + btoa(key))
+
+  //header object
+  var obj = {
+    method: 'GET',
+    headers: headers
+  }
+  // get company filing history
+
+  try {
+    const response = await fetch(url, obj);
+    const data = await response.json();
+    // console.log('FILING HOSTORY OBJECT: ' + JSON.stringify(data) + '\n')
+
+    const xRateLimitRemain = response.headers.get('x-ratelimit-remain')
+    const xRateLimitReset = response.headers.get('x-ratlimit-reset');
+    // console.log("xRateLimitRemain: " + xRateLimitRemain + " " + typeof xRateLimitRemain)
+
+    if (xRateLimitRemain === '10') {
+      console.log('Hit the API rate limit. Waiting 5 mins...');
+      await new Promise(resolve => setTimeout(resolve, 360000));
+      console.log('Resuming...');
+    }
+
+    return data;
+
+  } catch (error) {
+    console.log('Error happened here!')
+    console.error(error)
+  }
+}
 //function to download the .pdf file given the Amazon S3 url 
 const downloadFile = (async (url, path) => {
   const res = await fetch(url);
@@ -244,5 +180,49 @@ const downloadFile = (async (url, path) => {
   });
 });
 
+async function insertData(link, id, number) {
 
-getAccounts()
+  let x;
+
+  if (number === 1) {
+    x = 'accounts_link_1'
+  } else {
+    x = 'accounts_link_2'
+  }
+
+  try {
+    const query = `UPDATE companies SET "${x}" = $1 WHERE id = $2`;
+    const values = [link, id];
+
+    const res = await db.query(query, values);
+    console.log('Data inserted successfully' + JSON.stringify(res));
+  } catch (err) {
+    console.error('Error inserting data: ', err);
+  }
+}
+
+async function getBatches(batchSize) {
+  // getCompanies returns an array of active companies with a specific sic code
+
+  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active'`;
+  const countResult = await db.query(countQuery);
+  const totalRows = parseInt(countResult.rows[0].count, 10);
+
+  for (let offset = 0; offset < totalRows; offset += batchSize) {
+    console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
+    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' LIMIT ${batchSize} OFFSET ${offset}`;
+    const selectResult = await db.query(selectQuery);
+    const data = selectResult.rows;
+
+    //console.log('data: ' + JSON.stringify(data) + '\n')
+
+    let companies = await getCompanies(data);
+
+    for await (var company of companies) {
+      let accounts = await getAccounts(company);
+      console.log(accounts)
+    }
+  }
+}
+
+getBatches(300)
