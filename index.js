@@ -1,46 +1,39 @@
+// imports
 import * as dotenv from 'dotenv'
 import fetch from 'node-fetch';
 import { Headers } from 'node-fetch';
 import fs from 'fs'
 import db from './utils/db.js';
-
-/* THUNDERHEAD DB CONTAINS THE BASIC DATA FROM COMPANIES HOUSE FREE DATA DUMP: https://download.companieshouse.gov.uk/en_output.html 
-THIS APP STARTS AT getAccounts() ln 256. 
-
-FIRST getAccounts() CALLS const item getCompanies() THAT RETURNS AN ARRAY OF COMPANIES DEFINED IN 'QUERY'.
-
-THERE IS NO POINT GETTING COMPANIES THAT DONT HAVE 'FULL' ACCOUNTS SO AT A MINIMUM THE QQERY SHOULD
-INCLUDE 'WHERE accounts_category = FULL.
-
-THEN fetchFilings() IS CALLED. THIS LOOPS THROUGH THE ARRAY OF COMPANIES AND GRABS THE COMPANY NUMBER.
-WITH THAT IT CALLS THE API AND RETURNS THE URL OF THE FILING HISTORY OBJECTS FOR THAT COMPANY.
-
-WE THEN FETCH THE FILING HISTORY OBJECT. THERE ARE LOTS OF ITEMS IN HERE, WE ONLY WANT THE ONES WITH FULL ACCOUNTS.
-THESE HAVE ACCOUNT TYPE OF 'AA' AND DESCRIPTION OF "accounts-with-accounts-type-full".
-
-WE ALSO DO SOME CLEVER STUFF TO AVOID TRIGGERING THE API RATE LIMIT. THE APP WILL WAIT 5 MINS IF IT HITS THE LIMIT.
-
-ONCE WE HAVE THE FILING HISTORY OBJECTS WE LOOP THROUGH THEM AND GRAB THE LINKS TO THE PDF'S. WE ALSO GRAB THE DATE
-
-THE FILING HISTORY OF EACH COMPANY IN THE DB.
-
-*/
-// to run use: node index.js n from the terminal, where n = the batch number (look in the Accounts
-// folder to get the current batch. 
-
-// 1. TODO: Add the current batch number to the database to track it)
-
-// 2. TODO: Update the database with the new accounts object and the link to the pdf's (line 196)
-
-// 3. TODO: Add this data to the Next.js frontend
-
+// setup env variables
 dotenv.config()
 
 // global api key
 var key = process.env.KEY
-// index of api call
-let index = process.argv[2]
 
+// script starts here, gets companies from db in batches specified when calling e.g. getBatches(300)
+async function getBatches(batchSize) {
+
+  // countquery returns the total number of companies returned by the query
+  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' AND sic_code_1 = '63990 - Other information service activities n.e.c.'`;
+  const countResult = await db.query(countQuery);
+  const totalRows = parseInt(countResult.rows[0].count, 10);
+
+  for (let offset = 0; offset < totalRows; offset += batchSize) {
+    console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
+    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' AND sic_code_1 = '63990 - Other information service activities n.e.c.' LIMIT ${batchSize} OFFSET ${offset}`;
+    const selectResult = await db.query(selectQuery);
+    const data = selectResult.rows;
+
+    // getCompanies returns an array of companies defined in selctQuery
+    let companies = await getCompanies(data);
+    // for each row in the array of companies, getAccounts returns 
+    for await (var company of companies) {
+      let accounts = await getAccounts(company);
+      console.log(accounts)
+    }
+  }
+}
+// returns an array of companies - called from getBatches
 async function getCompanies(data) {
 
   let items = data;
@@ -57,14 +50,15 @@ async function getCompanies(data) {
 
   return items
 }
-
+// calls fetchFiling and adds to the company object then downloads the pdf
+// then adds the link to the database in the corrosponding row
 async function getAccounts(company) {
 
   let item = company;
-  console.log('item: ' + JSON.stringify(item.account_filing.items) + '\n')
+  // console.log('item: ' + JSON.stringify(item.account_filing.items) + '\n')
   let count = 0;
-  // loop through each company in items and add the filing history object.
 
+  // loop through each company object in items and add the relevant filing history object
   for await (var filing of item.account_filing.items) {
 
     // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
@@ -87,7 +81,7 @@ async function getAccounts(company) {
         headers: headers
       }
 
-      //2. fetch the document metadata
+      //fetch the document metadata
 
       try {
 
@@ -102,16 +96,17 @@ async function getAccounts(company) {
 
         var dir = `./Accounts/`;
         var link = `${item.name.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
-
+        // make the directory if it doesn't exist
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir);
         }
-
-
-
+        // link to the file
         const doc_link = `${dir}${link}`
+        // download the file and
         await downloadFile(doc.url, doc_link)
+        //and insert the data into the database
         await insertData(link, item.id, count)
+        // increment the count so we only get the last 2 account pdf's
         count++
 
       } catch (error) {
@@ -120,7 +115,7 @@ async function getAccounts(company) {
     }
   }
 }
-
+// called from getAccounts to get the filing history for each company
 async function fetchFiling(item) {
 
   // limit number of calls to 500 every 5 mins
@@ -179,7 +174,7 @@ const downloadFile = (async (url, path) => {
     console.log("done!")
   });
 });
-
+// called from getAccounts to insert the link to the pdf into the database
 async function insertData(link, id, number) {
 
   let x;
@@ -200,29 +195,5 @@ async function insertData(link, id, number) {
     console.error('Error inserting data: ', err);
   }
 }
-
-async function getBatches(batchSize) {
-  // getCompanies returns an array of active companies with a specific sic code
-
-  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active'`;
-  const countResult = await db.query(countQuery);
-  const totalRows = parseInt(countResult.rows[0].count, 10);
-
-  for (let offset = 0; offset < totalRows; offset += batchSize) {
-    console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
-    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' LIMIT ${batchSize} OFFSET ${offset}`;
-    const selectResult = await db.query(selectQuery);
-    const data = selectResult.rows;
-
-    //console.log('data: ' + JSON.stringify(data) + '\n')
-
-    let companies = await getCompanies(data);
-
-    for await (var company of companies) {
-      let accounts = await getAccounts(company);
-      console.log(accounts)
-    }
-  }
-}
-
+// start the process
 getBatches(300)
