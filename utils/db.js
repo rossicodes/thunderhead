@@ -1,12 +1,15 @@
+import * as dotenv from 'dotenv'
 import pg from 'pg'
 const { Pool } = pg
 
 // pools will use environment variables
 // for connection information
 
+dotenv.config()
+
 const pool = new Pool({
-    host: '127.0.0.1',
-    database: 'rossi',
+    host: 'localhost',
+    database: 'companies',
     port: 5432,
     user: process.env.NEXT_PUBLIC_POSTGRES_USER,
     password: process.env.NEXT_PUBLIC_POSTGRES_PASS,

@@ -4,6 +4,14 @@ import fetch from 'node-fetch';
 import { Headers } from 'node-fetch';
 import fs from 'fs'
 import db from './utils/db.js';
+import { S3Client } from "@aws-sdk/client-s3";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+
+const REGION = 'eu-north-1';
+const s3Client = new S3Client({ region: REGION });
+
+
+
 // setup env variables
 dotenv.config()
 
@@ -14,13 +22,13 @@ var key = process.env.KEY
 async function getBatches(batchSize) {
 
   // countquery returns the total number of companies returned by the query
-  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' AND sic_code_1 = '63990 - Other information service activities n.e.c.'`;
+  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active'`;
   const countResult = await db.query(countQuery);
   const totalRows = parseInt(countResult.rows[0].count, 10);
 
   for (let offset = 0; offset < totalRows; offset += batchSize) {
-    console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
-    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' AND sic_code_1 = '63990 - Other information service activities n.e.c.' LIMIT ${batchSize} OFFSET ${offset}`;
+    console.log(`\u001b[1;32m Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
+    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' LIMIT ${batchSize} OFFSET ${offset}`;
     const selectResult = await db.query(selectQuery);
     const data = selectResult.rows;
 
@@ -28,8 +36,8 @@ async function getBatches(batchSize) {
     let companies = await getCompanies(data);
     // for each row in the array of companies, getAccounts returns 
     for await (var company of companies) {
-      let accounts = await getAccounts(company);
-      console.log(accounts)
+      await getAccounts(company);
+      console.log("Getting next company...\n")
     }
   }
 }
@@ -66,8 +74,8 @@ async function getAccounts(company) {
     // account_no WILL BE 1 FOR THE FIRST ACCOUNT FILING AND 2 FOR THE SECOND
 
     if (filing.description === "accounts-with-accounts-type-full" && count < 2) {
-      console.log('count: ' + count)
-      console.log(`Company number: ${item.number} \nCompany name: ${item.name} \n`)
+      //console.log('count: ' + count)
+      console.log(`Getting Accounts for:\nCompany name: ${item.name} Company number: ${item.number}`)
 
       let headers = new Headers();
 
@@ -95,7 +103,7 @@ async function getAccounts(company) {
         // console.log(doc.url)
 
         var dir = `./Accounts/`;
-        var link = `${item.name.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
+        var link = `${item.number.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
         // make the directory if it doesn't exist
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir);
@@ -104,8 +112,10 @@ async function getAccounts(company) {
         const doc_link = `${dir}${link}`
         // download the file and
         await downloadFile(doc.url, doc_link)
-        //and insert the data into the database
-        await insertData(link, item.id, count)
+        // upload to S3
+        const s3url = await uploadS3(dir, link)
+        // and insert the data into the database
+        await insertData(s3url, item.id, count)
         // increment the count so we only get the last 2 account pdf's
         count++
 
@@ -114,6 +124,7 @@ async function getAccounts(company) {
       }
     }
   }
+
 }
 // called from getAccounts to get the filing history for each company
 async function fetchFiling(item) {
@@ -171,11 +182,11 @@ const downloadFile = (async (url, path) => {
     res.body.pipe(fileStream);
     res.body.on("error", reject);
     fileStream.on("finish", resolve);
-    console.log("done!")
+    console.log("Accounts Downloaded")
   });
 });
 // called from getAccounts to insert the link to the pdf into the database
-async function insertData(link, id, number) {
+async function insertData(s3url, id, number) {
 
   let x;
 
@@ -187,13 +198,37 @@ async function insertData(link, id, number) {
 
   try {
     const query = `UPDATE companies SET "${x}" = $1 WHERE id = $2`;
-    const values = [link, id];
+    const values = [s3url, id];
 
     const res = await db.query(query, values);
-    console.log('Data inserted successfully' + JSON.stringify(res));
+    console.log("S3 link inserted to db\n");
   } catch (err) {
     console.error('Error inserting data: ', err);
   }
 }
+
+async function uploadS3(dir, link) {
+
+  const bucketUrl = 'https://company-data-ai.s3.eu-north-1.amazonaws.com/'
+
+  const fileName = `${dir}${link}`;
+  const fileBuffer = fs.readFileSync(fileName);
+  const params = {
+    Bucket: 'company-data-ai',
+    Key: link,
+    Body: fileBuffer,
+    ContentType: 'application/pdf'
+  };
+
+  try {
+    const data = await s3Client.send(new PutObjectCommand(params));
+    console.log("uploaded to aws S3");
+  } catch (err) {
+    console.log("Error", err);
+  }
+  console.log("S3 Url: " + bucketUrl + params.Key)
+  return bucketUrl + params.Key;
+}
+
 // start the process
 getBatches(300)
