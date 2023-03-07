@@ -10,34 +10,53 @@ import { PutObjectCommand } from "@aws-sdk/client-s3";
 const REGION = 'eu-north-1';
 const s3Client = new S3Client({ region: REGION });
 
-
-
 // setup env variables
 dotenv.config()
 
 // global api key
 var key = process.env.KEY
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // script starts here, gets companies from db in batches specified when calling e.g. getBatches(300)
 async function getBatches(batchSize) {
+  // countQuery returns the total number of companies returned by the query
+  const sic = "63120 - Web portals"
 
-  // countquery returns the total number of companies returned by the query
-  const countQuery = `SELECT COUNT(*) FROM companies WHERE accounts_category = 'FULL' AND status = 'Active'`;
+  // '47910 - Retail sale via mail order houses or via Internet'
+  // '63120 - Web portals'
+  // '63990 - Other information service activities n.e.c.', sic_code_2: '63990 - Other information service activities n.e.c.'
+
+  const countQuery = {
+    text: "SELECT COUNT(*) FROM companies WHERE sic_code_1 = $1 OR sic_code_2 = $1",
+    values: [sic],
+  }
+
   const countResult = await db.query(countQuery);
+  // console.log('countResult: ' + JSON.stringify(countResult) + '\n')
   const totalRows = parseInt(countResult.rows[0].count, 10);
 
   for (let offset = 0; offset < totalRows; offset += batchSize) {
-    console.log(`\u001b[1;32m Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
-    const selectQuery = `SELECT * FROM companies WHERE accounts_category = 'FULL' AND status = 'Active' LIMIT ${batchSize} OFFSET ${offset}`;
-    const selectResult = await db.query(selectQuery);
+    console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
+
+    const query = {
+      text: "SELECT * FROM companies WHERE sic_code_1 = $1 OR sic_code_2 = $1 LIMIT $2 OFFSET $3",
+      values: [sic, batchSize, offset],
+    }
+    const selectResult = await db.query(query);
     const data = selectResult.rows;
 
     // getCompanies returns an array of companies defined in selctQuery
     let companies = await getCompanies(data);
     // for each row in the array of companies, getAccounts returns 
+    let companyCount = companies.length;
+    console.log(`Analysing ${companyCount} companies...`);
     for await (var company of companies) {
+      await sleep(1000);
       await getAccounts(company);
-      console.log("Getting next company...\n")
+      // console.log(`${company.name}...\n`)
     }
   }
 }
@@ -45,14 +64,17 @@ async function getBatches(batchSize) {
 async function getCompanies(data) {
 
   let items = data;
+  console.log("Getting filing history")
 
   for await (var item of items) {
 
     let account_filing = await fetchFiling(item);
-
+    await sleep(1000);
     //console.log('account_filing: ' + JSON.stringify(account_filing) + '\n')
-    if (account_filing.filing_history_status === "filing-history-available") {
+    if (account_filing?.filing_history_status === "filing-history-available") {
+      // console.log(`Filing history available for ${item.name}`)
       item.account_filing = account_filing;
+
     }
   }
 
@@ -67,62 +89,85 @@ async function getAccounts(company) {
   let count = 0;
 
   // loop through each company object in items and add the relevant filing history object
-  for await (var filing of item.account_filing.items) {
 
-    // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
-    // AND WE ONLY WANT THE LAST 2 ACCOUNT FILINGS SO WE USE THE account_no VARIABLE 
-    // account_no WILL BE 1 FOR THE FIRST ACCOUNT FILING AND 2 FOR THE SECOND
+  // console.log(`Getting Accounts for:\nCompany name: ${JSON.stringify(item)}`)
 
-    if (filing.description === "accounts-with-accounts-type-full" && count < 2) {
-      //console.log('count: ' + count)
-      console.log(`Getting Accounts for:\nCompany name: ${item.name} Company number: ${item.number}`)
+  if (item?.account_filing?.items !== undefined) {
 
-      let headers = new Headers();
+    for await (var filing of item?.account_filing.items) {
 
-      //headers.append('Content-Type', 'text/xml')
-      headers.append('Accept', 'application/pdf')
-      headers.append('Authorization', 'Basic ' + btoa(key))
 
-      //header object
-      var obj = {
-        method: 'GET',
-        headers: headers
-      }
+      //  console.log('filing : ' + JSON.stringify(filing) + '\n')
 
-      //fetch the document metadata
+      // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
+      // AND WE ONLY WANT THE LAST 2 ACCOUNT FILINGS SO WE USE THE account_no VARIABLE 
+      // account_no WILL BE 1 FOR THE FIRST ACCOUNT FILING AND 2 FOR THE SECOND
 
-      try {
+      if (count < 2) {
 
-        const metadata = await (await fetch(filing.links.document_metadata, obj)).json()
-        let document = metadata.links.document
+        if (filing.description === "accounts-with-accounts-type-full" || "accounts-with-accounts-type-full-group" || "accounts-with-accounts-type-initial" || "accounts-with-accounts-type-interim" || "accounts-with-accounts-type-group" || "accounts-with-accounts-type-medium" || "accounts-with-accounts-type-medium-group" || "accounts-with-accounts-type-small" || "accounts-with-accounts-type-small-group") {
+          await sleep(1000);
+          //console.log('count: ' + count)
+          console.log(`Getting Accounts for: ${item.name}`)
 
-        // console.log('metadata: ' + JSON.stringify(metadata))
+          let headers = new Headers();
 
-        const doc = await fetch(document, obj)
+          //headers.append('Content-Type', 'text/xml')
+          headers.append('Accept', 'application/pdf')
+          headers.append('Authorization', 'Basic ' + btoa(key))
 
-        // console.log(doc.url)
+          //header object
+          var obj = {
+            method: 'GET',
+            headers: headers
+          }
 
-        var dir = `./Accounts/`;
-        var link = `${item.number.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
-        // make the directory if it doesn't exist
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir);
+          //fetch the document metadata
+
+          try {
+
+
+
+            const metadata = await (await fetch(filing.links.document_metadata, obj)).json()
+
+            if (metadata?.category === "accounts") {
+              console.log('metadata: ' + JSON.stringify(metadata) + '\n')
+
+              let document = metadata.links.document
+
+              const doc = await fetch(document, obj)
+
+              // console.log(doc.url)
+
+              var dir = `./Accounts/`;
+              var link = `${item.number.replace(/[\s\\\/]/g, "_")}_${count}.pdf`
+              // make the directory if it doesn't exist
+              if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir);
+              }
+              // link to the file
+              const doc_link = `${dir}${link}`
+              // download the file and
+              await downloadFile(doc.url, doc_link)
+              // upload the file to s3
+              const s3url = await uploadS3(dir, link)
+              console.log('uploaded to s3')
+              // and insert the data into the database
+              await insertData(s3url, item.id, count)
+              console.log('added to db')
+              // increment the count so we only get the last 2 account pdf's
+              count++
+            }
+
+          } catch (error) {
+            console.error(error)
+          }
+
         }
-        // link to the file
-        const doc_link = `${dir}${link}`
-        // download the file and
-        await downloadFile(doc.url, doc_link)
-        // upload to S3
-        const s3url = await uploadS3(dir, link)
-        // and insert the data into the database
-        await insertData(s3url, item.id, count)
-        // increment the count so we only get the last 2 account pdf's
-        count++
-
-      } catch (error) {
-        console.error(error)
       }
     }
+  } else {
+    console.log(`No filing history found for ${item.name}`)
   }
 
 }
@@ -182,7 +227,7 @@ const downloadFile = (async (url, path) => {
     res.body.pipe(fileStream);
     res.body.on("error", reject);
     fileStream.on("finish", resolve);
-    console.log("Accounts Downloaded")
+    // console.log("Accounts Downloaded")
   });
 });
 // called from getAccounts to insert the link to the pdf into the database
@@ -201,7 +246,7 @@ async function insertData(s3url, id, number) {
     const values = [s3url, id];
 
     const res = await db.query(query, values);
-    console.log("S3 link inserted to db\n");
+    //  console.log("S3 link inserted to db\n");
   } catch (err) {
     console.error('Error inserting data: ', err);
   }
@@ -209,12 +254,12 @@ async function insertData(s3url, id, number) {
 
 async function uploadS3(dir, link) {
 
-  const bucketUrl = 'https://company-data-ai.s3.eu-north-1.amazonaws.com/'
+  const bucketUrl = 'https://uk-company-accounts.s3.eu-north-1.amazonaws.com/'
 
   const fileName = `${dir}${link}`;
   const fileBuffer = fs.readFileSync(fileName);
   const params = {
-    Bucket: 'company-data-ai',
+    Bucket: 'uk-company-accounts',
     Key: link,
     Body: fileBuffer,
     ContentType: 'application/pdf'
@@ -222,13 +267,13 @@ async function uploadS3(dir, link) {
 
   try {
     const data = await s3Client.send(new PutObjectCommand(params));
-    console.log("uploaded to aws S3");
+    //  console.log("uploaded to S3");
   } catch (err) {
     console.log("Error", err);
   }
-  console.log("S3 Url: " + bucketUrl + params.Key)
+  // console.log("S3 Url: " + bucketUrl + params.Key)
   return bucketUrl + params.Key;
 }
 
 // start the process
-getBatches(300)
+getBatches(20)
