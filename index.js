@@ -97,7 +97,7 @@ async function getAccounts(company) {
     for await (var filing of item?.account_filing.items) {
 
 
-      console.log('filing : ' + JSON.stringify(filing) + '\n')
+      // console.log('filing : ' + JSON.stringify(filing) + '\n')
 
       // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
       // AND WE ONLY WANT THE LAST 2 ACCOUNT FILINGS SO WE USE THE account_no VARIABLE 
@@ -105,10 +105,11 @@ async function getAccounts(company) {
 
       if (count < 2) {
 
-        if (filing.description === "accounts-with-accounts-type-full" || "accounts-with-accounts-type-full-group" || "accounts-with-accounts-type-initial" || "accounts-with-accounts-type-interim" || "accounts-with-accounts-type-group" || "accounts-with-accounts-type-medium" || "accounts-with-accounts-type-medium-group" || "accounts-with-accounts-type-small" || "accounts-with-accounts-type-small-group") {
-          await sleep(1000);
+        const descriptionsToMatch = ["accounts-with-accounts-type-full", "accounts-with-accounts-type-full-group", "accounts-with-accounts-type-initial", "accounts-with-accounts-type-interim", "accounts-with-accounts-type-group", "accounts-with-accounts-type-medium", "accounts-with-accounts-type-medium-group", "accounts-with-accounts-type-small", "accounts-with-accounts-type-small-group", "accounts-with-accounts-type-total-exemption-ful", "accounts-with-accounts-type-total-exemption-small", "accounts-with-accounts-type-partial-exemption"];
+
+        if (descriptionsToMatch.includes(filing?.description)) {
           //console.log('count: ' + count)
-          console.log(`Getting ${filing.description} accounts for: ${item.name}`)
+          console.log(`📗: Getting ${filing.description} accounts for: ${item.name}`)
 
           let headers = new Headers();
 
@@ -151,7 +152,7 @@ async function getAccounts(company) {
               const s3url = await uploadS3(dir, link)
               console.log('uploaded to s3')
               // and insert the data into the database
-              await insertData(s3url, item.id, count)
+              await insertData(s3url, item.id, count, filing.description)
               console.log('added to db')
               // increment the count so we only get the last 2 account pdf's
               count++
@@ -229,25 +230,35 @@ const downloadFile = (async (url, path) => {
   });
 });
 // called from getAccounts to insert the link to the pdf into the database
-async function insertData(s3url, id, number) {
+async function insertData(s3url, id, number, type) {
 
-  let x;
+  let a, t;
 
   if (number === 0) {
-    x = 'accounts_link_1'
+    a = 'accounts_link_1'
+    t = 'accounts_type_1'
   } else {
-    x = 'accounts_link_2'
+    a = 'accounts_link_2'
+    t = 'accounts_type_2'
   }
 
   try {
     const query = {
-      text: `UPDATE ecommerce SET ${x} = $1 WHERE id = $2`,
+      text: `UPDATE ecommerce SET ${a} = $1 WHERE id = $2`,
       values: [s3url, id],
     }
-    console.log("Query: " + JSON.stringify(query));
 
+    const query1 = {
+      text: `UPDATE ecommerce SET ${t} = $1 WHERE id = $2`,
+      values: [type, id],
+    }
+
+    console.log("Query: " + JSON.stringify(query));
     const res = await db.query(query);
-    console.log("From db: " + res);
+    console.log("📗: updated accounts: " + JSON.stringify(res));
+    console.log("Query1: " + JSON.stringify(query1));
+    const res1 = await db.query(query1);
+    console.log("📗: updated type: " + JSON.stringify(res1));
   } catch (err) {
     console.error('Error inserting data: ', err);
   }
@@ -277,4 +288,4 @@ async function uploadS3(dir, link) {
 }
 
 // start the process
-getBatches(50)
+getBatches(200)

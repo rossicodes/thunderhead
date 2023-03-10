@@ -8,7 +8,7 @@ const { Pool } = pg
 dotenv.config()
 
 const pool = new Pool({
-    host: 'localhost',
+    host: '34.22.242.89',
     database: 'companies',
     port: 5432,
     user: process.env.NEXT_PUBLIC_POSTGRES_USER,
