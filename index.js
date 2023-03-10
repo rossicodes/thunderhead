@@ -23,15 +23,15 @@ function sleep(ms) {
 // script starts here, gets companies from db in batches specified when calling e.g. getBatches(300)
 async function getBatches(batchSize) {
   // countQuery returns the total number of companies returned by the query
-  const sic = "63120 - Web portals"
+  const sic = '63990 - Other information service activities n.e.c.'
 
   // '47910 - Retail sale via mail order houses or via Internet'
   // '63120 - Web portals'
   // '63990 - Other information service activities n.e.c.', sic_code_2: '63990 - Other information service activities n.e.c.'
 
   const countQuery = {
-    text: "SELECT COUNT(*) FROM companies WHERE sic_code_1 = $1 OR sic_code_2 = $1",
-    values: [sic],
+    text: "SELECT COUNT(*) FROM ecommerce",
+    values: [],
   }
 
   const countResult = await db.query(countQuery);
@@ -42,8 +42,8 @@ async function getBatches(batchSize) {
     console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
 
     const query = {
-      text: "SELECT * FROM companies WHERE sic_code_1 = $1 OR sic_code_2 = $1 LIMIT $2 OFFSET $3",
-      values: [sic, batchSize, offset],
+      text: "SELECT * FROM ecommerce LIMIT $1 OFFSET $2",
+      values: [batchSize, offset],
     }
     const selectResult = await db.query(query);
     const data = selectResult.rows;
@@ -97,7 +97,7 @@ async function getAccounts(company) {
     for await (var filing of item?.account_filing.items) {
 
 
-      //  console.log('filing : ' + JSON.stringify(filing) + '\n')
+      console.log('filing : ' + JSON.stringify(filing) + '\n')
 
       // CHECK IF THE FILING IS AN ACCOUNTS FILING AND IF IT IS FULL ACCOUNTS
       // AND WE ONLY WANT THE LAST 2 ACCOUNT FILINGS SO WE USE THE account_no VARIABLE 
@@ -108,7 +108,7 @@ async function getAccounts(company) {
         if (filing.description === "accounts-with-accounts-type-full" || "accounts-with-accounts-type-full-group" || "accounts-with-accounts-type-initial" || "accounts-with-accounts-type-interim" || "accounts-with-accounts-type-group" || "accounts-with-accounts-type-medium" || "accounts-with-accounts-type-medium-group" || "accounts-with-accounts-type-small" || "accounts-with-accounts-type-small-group") {
           await sleep(1000);
           //console.log('count: ' + count)
-          console.log(`Getting Accounts for: ${item.name}`)
+          console.log(`Getting ${filing.description} accounts for: ${item.name}`)
 
           let headers = new Headers();
 
@@ -125,8 +125,6 @@ async function getAccounts(company) {
           //fetch the document metadata
 
           try {
-
-
 
             const metadata = await (await fetch(filing.links.document_metadata, obj)).json()
 
@@ -235,18 +233,21 @@ async function insertData(s3url, id, number) {
 
   let x;
 
-  if (number === 1) {
+  if (number === 0) {
     x = 'accounts_link_1'
   } else {
     x = 'accounts_link_2'
   }
 
   try {
-    const query = `UPDATE companies SET "${x}" = $1 WHERE id = $2`;
-    const values = [s3url, id];
+    const query = {
+      text: `UPDATE ecommerce SET ${x} = $1 WHERE id = $2`,
+      values: [s3url, id],
+    }
+    console.log("Query: " + JSON.stringify(query));
 
-    const res = await db.query(query, values);
-    //  console.log("S3 link inserted to db\n");
+    const res = await db.query(query);
+    console.log("From db: " + res);
   } catch (err) {
     console.error('Error inserting data: ', err);
   }
@@ -276,4 +277,4 @@ async function uploadS3(dir, link) {
 }
 
 // start the process
-getBatches(20)
+getBatches(50)
