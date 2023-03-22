@@ -29,9 +29,12 @@ async function getBatches(batchSize) {
   // '63120 - Web portals'
   // '63990 - Other information service activities n.e.c.', sic_code_2: '63990 - Other information service activities n.e.c.'
 
+  // database table
+  const table = 'websites'
+
   const countQuery = {
-    text: "SELECT COUNT(*) FROM ecommerce",
-    values: [],
+    text: "SELECT COUNT(*) FROM $1",
+    values: [table],
   }
 
   const countResult = await db.query(countQuery);
@@ -42,8 +45,8 @@ async function getBatches(batchSize) {
     console.log(`Getting companies ${offset} to ${offset + batchSize} of ${totalRows}...`);
 
     const query = {
-      text: "SELECT * FROM ecommerce LIMIT $1 OFFSET $2",
-      values: [batchSize, offset],
+      text: "SELECT * FROM $1 LIMIT $2 OFFSET $3",
+      values: [table, batchSize, offset],
     }
     const selectResult = await db.query(query);
     const data = selectResult.rows;
@@ -244,13 +247,13 @@ async function insertData(s3url, id, number, type) {
 
   try {
     const query = {
-      text: `UPDATE ecommerce SET ${a} = $1 WHERE id = $2`,
-      values: [s3url, id],
+      text: `UPDATE $1 SET ${a} = $2 WHERE id = $3`,
+      values: [table, s3url, id],
     }
 
     const query1 = {
-      text: `UPDATE ecommerce SET ${t} = $1 WHERE id = $2`,
-      values: [type, id],
+      text: `UPDATE $1 SET ${t} = $2 WHERE id = $3`,
+      values: [table, type, id],
     }
 
     console.log("Query: " + JSON.stringify(query));
